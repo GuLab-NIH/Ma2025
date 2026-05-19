@@ -1,0 +1,539 @@
+%% calculatePopulationCoherence
+% calculates population coherence across days and analyzes trends
+
+clear; clc
+close all
+
+p1 = 'D:\4m_optoPaper';
+cd(p1)
+
+% load folders
+load('folders4m.mat')
+nDays = size(allLocs,1);
+nFOV = size(allLocs,2);
+
+% define settings
+nBins = 80;
+diags = 0;
+contOn = 0:2;
+contOff = 6:nBins/2;
+suff = 'dfof';
+winSz = 5;
+fileNamePop = ['popCoherenceFix_' suff '.mat'];
+fileNamePair = ['popSynchronyFullFix' suff '-' num2str(winSz) '.mat'];
+fNames = {'PVC','RSA','PPS'};
+nFields = length(fNames);
+useBins = 1:73;
+
+% initialize data array
+data = struct();
+data.mean.PVC = nan(size(allLocs));
+data.mean.RSA = nan(size(allLocs));
+data.mean.PPS = nan(size(allLocs));
+data.mean.contPVC = nan(size(allLocs));
+data.mean.contRSA = nan(size(allLocs));
+data.mean.contPPS = nan(size(allLocs));
+data.spatial.PVC = nan([size(allLocs) nBins]);
+data.spatial.RSA = nan([size(allLocs) nBins]);
+data.spatial.PPS = nan([size(allLocs) nBins]);
+data.map.PVC = nan([size(allLocs) nBins nBins]);
+data.map.RSA = nan([size(allLocs) nBins nBins]);
+data.map.PPS = nan([size(allLocs) nBins nBins]);
+
+for ff = 1:nFOV
+    for dd = 1:nDays        
+        % move to current folder
+        if ~isempty(allLocs{dd,ff})
+            cd(allLocs{dd,ff})
+        else
+            continue
+        end
+
+        %%
+
+        % load use rois
+        load('roiMasks.mat','masks')
+        useMask = masks(:,1);
+
+        % get population correlation matrices
+        if isfile(fileNamePop)
+            load(fileNamePop,'PVC','RSA')
+        else
+            % load dfof
+            if strcmp(suff,'sig')
+                load('RunByRun_sig\dfofMInterpM_sig.mat')
+                dfof = cat(3,dfofMInterpM_sig{:});
+            elseif strcmp(suff,'dfof')
+                load('RunByRun_dfof\dfofMInterpM.mat')
+                dfof = cat(3,dfofMInterpM{:});
+            else
+                error('Invalid suffix')
+            end
+            [PVC,RSA] = popCoherence(dfof(:,:,useMask));
+            save(fileNamePop,'PVC','RSA')
+            copyfile('D:\4m_optoPaper\RevisionAnalysis\popCoherence.m','postAnalysis\popCoherence.m')
+        end
+
+        % get pairwise population synchrony matrices
+        if isfile(fileNamePair)
+            load(fileNamePair,'PPS')
+        else
+            % load dfof
+            if strcmp(suff,'sig')
+                load('RunByRun_sig\dfofMInterpM_sig.mat')
+                dfof = cat(3,dfofMInterpM_sig{:});
+            elseif strcmp(suff,'dfof')
+                load('RunByRun_dfof\dfofMInterpM.mat')
+                dfof = cat(3,dfofMInterpM{:});
+            else
+                error('Invalid suffix')
+            end
+            [PPS] = popSynchronyFull(dfof(:,:,useMask),winSz);
+            save(fileNamePair,'PPS')
+            copyfile('D:\4m_optoPaper\RevisionAnalysis\popSynchrony.m','postAnalysis\popSynchrony.m')
+        end
+
+        for field = 1:nFields
+            % select spatial diagonals
+            if strcmp(fNames{field},'PVC')
+                curData = PVC;
+            elseif strcmp(fNames{field},'RSA')
+                curData = 1-RSA;
+            elseif strcmp(fNames{field},'PPS')
+                curData = PPS;
+            end
+
+            % get all use diagonals
+            allDiags = [];
+            for d = 1:length(diags)
+                allDiags(:,d) = diag(circshift(curData,diags(d),1));
+            end
+            meanDiag = mean(allDiags,2,'omitnan');
+            nBinsCur = length(meanDiag);
+
+            % store spatial results
+            data.spatial.(fNames{field})(dd,ff,1:nBinsCur) = meanDiag;
+
+            % store mean results
+            data.mean.(fNames{field})(dd,ff) = mean(meanDiag,'omitnan');
+
+            % store 2D map
+            data.map.(fNames{field})(dd,ff,1:nBinsCur,1:nBinsCur) = curData;
+
+            % get contrast diagonals
+            allContOn = [];
+            for d = 1:length(contOn)
+                allContOn(:,d) = diag(circshift(curData,contOn(d),1));
+            end
+            meanContOn = mean(allContOn,'all','omitnan');
+
+            % get contrast off-diagonals
+            allContOff = [];
+            for d = 1:length(contOff)
+                allContOff(:,d) = diag(circshift(curData,contOff(d),1));
+            end
+            meanContOff = mean(allContOff,'all','omitnan');
+
+            % store on/off diagonal contrast
+            data.mean.(['cont' fNames{field}])(dd,ff) = meanContOn-meanContOff;
+        end
+
+        % return to original folder
+        cd(p1)
+    end
+end
+
+
+%% Visualize 2D coherence
+
+useGroups = [1:2 8:12];
+useDays = 1:10;
+nDaysU = length(useDays);
+
+figure;
+t = tiledlayout(nFields,nDaysU);
+
+curCMap = customcolormap([0 0.25 0.5 0.75 1],[0 0 1; 0.5 0.5 1; 1 1 1; 1 0.5 0.5; 1 0 0]);
+cLims = {[-1 1],[-1 1],[-0.5 0.5]};
+
+finalData = struct();
+
+for field = 1:nFields
+    for dd = 1:nDaysU
+        % calculate 2D mean
+        curMap = squeeze(data.map.(fNames{field})(useDays(dd),useGroups,:,:));
+        plotMap = squeeze(mean(curMap,1,'omitnan'));
+
+        % plot population coherence heatmap
+        nexttile((field-1)*nDaysU+dd)
+
+        imAlpha = ones(size(plotMap));
+        imAlpha(isnan(plotMap))=0;
+        imagesc(plotMap,'AlphaData',imAlpha);
+        set(gca,'color',0*[1 1 1]);
+        set(gca,'FontSize',15);
+
+        % set axes
+        xlim([0.5 nBins+0.5])
+        ylim([0.5 nBins+0.5])
+        clim(cLims{field})
+        colormap(curCMap)
+        axis('square')
+        set(gca,'XTick',[],'YTick',[],'XColor','none','YColor','none','Box','off')
+        title([fNames{field} ': Day ' num2str(useDays(dd))])
+
+        finalData.(fNames{field}){dd} = plotMap;
+    end
+end
+
+
+%% Load RBR correlation and behavior
+
+% load mean RBR
+if strcmp(suff,'sig')
+    load('actPropData_sig.mat','rawData')
+    RBR = rawData.all.RBRCorr;
+elseif strcmp(suff,'dfof')
+    load('actPropData.mat','rawData')
+    RBR = rawData.all.RBRCorr;
+else
+    error('Invalid suffix')
+end
+data.mean.RBR = cellfun(@(x) mean(x,'omitnan'),RBR);
+
+% load spatial RBR
+load('locData.mat')
+locRBR = cellfun(@(x) [mean(x,1,'omitnan') nan(1,nBins-size(x,2))],...
+    rawData.all.LocRBR,'UniformOutput',false);
+locRBRcat = cat(1, locRBR{:});
+data.spatial.RBR = permute(reshape(locRBRcat.',80,size(locRBR,1),size(locRBR,2)), [2 3 1]);
+
+% load behavior
+load('behavior4m.mat')
+data.mean.lick = behavior4m.lick.good';
+data.mean.slow = behavior4m.slow.good'/100;
+
+load('RevisionAnalysis\behDistribution_vRPR.mat','dataBeh')
+data.spatial.Velocity = dataBeh.Vel;
+data.spatial.Acceleration = dataBeh.Acc;
+data.spatial.Licking = dataBeh.Lick;
+data.spatial.laps = dataBeh.laps;
+
+% save final structure
+save('RevisionAnalysis\dataRevision_vRPR.mat','data')
+
+
+%% Split data by spatial location
+
+fNames = {'RBR','PVC','PPS'};
+nFields = length(fNames);
+
+% load cur template
+load('cueTemp.mat');
+bRewBin = 73;
+beforeReward = 67:bRewBin; %before reward
+temp = cueTemp;
+temp(beforeReward) = 2;
+tempUse = temp(1:bRewBin);
+
+% define sublocations
+idxs = struct();
+idxs.outCue = find(tempUse==0);  % out cue bins
+idxs.inCue = find(tempUse==1);   % in cue bins (excludes reward)
+idxs.preRew = find(tempUse==2);  % pre-reward bins
+
+% define location categories
+locCats = {'all','outCue','inCue','preRew'};
+nCats = length(locCats);
+
+for ii = 1:nFields
+    for cc = 1:nCats
+        % get current sub-location data
+        if strcmp(locCats{cc},'all')
+            dataAct = data.mean.(fNames{ii})(:,useGroups);
+        else
+            dataTemp = data.spatial.(fNames{ii})(:,useGroups,idxs.(locCats{cc}));
+            dataAct = mean(dataTemp,3,'omitnan');
+        end
+
+        data.subMean.(fNames{ii}).(locCats{cc}) = dataAct;
+    end
+end
+
+
+%% Plot mean results
+
+figure; tiledlayout(1,2)
+useGroups = [1:2 8:12];
+colors = {[0 0 0],[0.7 0 0],[0.95 0.35 0.15]};
+nFields = length(colors);
+
+finalData = struct();
+
+for ff = 1:2
+    nexttile(ff); hold on
+
+    if ff==1
+        % diagonal plot
+        fNames = {'RBR','PVC','PPS'};
+    elseif ff==2
+        % on/off diagonal contrast plot
+        fNames = {'RBR','contPVC','contPPS'};
+    end
+
+    for ii = 1:nFields
+        curData = data.mean.(fNames{ii})(:,useGroups);
+
+        M = mean(curData,2,'omitnan');
+        S = nansem(curData,2);
+
+        errorbar(M,S,'Color',colors{ii})
+
+        finalData.(['d' num2str(ff)]).(fNames{ii}) = curData';
+    end
+
+    legend(fNames,'Location','best')
+    xlim([0.5 nDays+0.5])
+end
+
+
+%% Plot mean results by location
+
+% define data
+fNames = {'RBR','PVC','PPS'};
+colors = {[0 0 0],[0.7 0 0],[0.95 0.35 0.15]};
+nFields = length(fNames);
+
+avgTitle = {'Raw','Norm day 1'};
+
+for avg = 1:2
+    figure; tiledlayout(1,nCats)
+    sgtitle(avgTitle{avg})
+
+    for cc = 1:nCats
+        nexttile(cc); hold on
+
+        for ii = 1:nFields
+            curData = data.subMean.(fNames{ii}).(locCats{cc});
+
+            % normalize data
+            if avg==2
+                curData = curData./curData(1,:);
+            end
+
+            M = mean(curData,2,'omitnan');
+            S = nansem(curData,2);
+            errorbar(M,S,'Color',colors{ii})
+
+            % calculate temporal correlation
+            [corrR,corrP] = corr((1:length(M))',M);
+            disp([fNames{ii} '-' locCats{cc} ': r = ' num2str(corrR,2) ', p = ' num2str(corrP,2)])
+
+            xlim([0.5 nDays+0.5])
+        end
+
+        legend(fNames,'Location','best')
+        title(locCats{cc})
+    end
+end
+
+%% Plot correlations
+
+useGroups = [1:2 8:12];
+varRef = 'RBR';
+varTest = {'PVC','contPVC'};
+ttlSupp = {'Diagonal','On/Off Diagonal Contrast'};
+nTest = length(varTest);
+useBinsSp = 1:73;
+
+dataCorr = struct;
+figure; tiledlayout(nTest,2)
+
+finalData = struct();
+
+
+for ii = 1:nTest
+    %% Plot temporal correlation
+
+    % define data
+    dataRefT = data.mean.(varRef)(:,useGroups);
+    dataTestT = data.mean.(varTest{ii})(:,useGroups);
+
+    % calculate correlation
+    [corrT,pT] = corr(dataRefT(:),dataTestT(:));
+    dataCorr.(varTest{ii}).corrT = corrT;
+    dataCorr.(varTest{ii}).pT = pT;
+
+    % define title
+    ttl = ['Temporal Corrleation (' ttlSupp{ii} '): r=' num2str(corrT,2)...
+        ', p=' num2str(pT,2)];
+
+    % plot scatter
+    nexttile(2*(ii-1)+1); hold on
+    scatter(dataRefT(:),dataTestT(:),'Marker','.','MarkerEdgeColor','k')
+
+    % set plot labels
+    % xlim([0 1])
+    xlabel(varRef)
+    % ylim([0 1])
+    ylabel(varTest{ii})
+    title(ttl)
+    axis('square')
+
+    finalData(ii).dataRefT = dataRefT(:);
+    finalData(ii).dataTestT = dataTestT(:);
+
+
+    %% Plot spatial correlation
+
+    % skip temporal only variables
+    if ~isfield(data.spatial,varTest{ii})
+        continue
+    end
+
+    % define data
+    % dataRefS = squeeze(mean(data.spatial.(varRef)(:,useGroups,:),[1 2],'omitnan'));
+    % dataTestS = squeeze(mean(data.spatial.(varTest{ii})(:,useGroups,:),[1 2],'omitnan'));
+
+    dataRefS = data.spatial.(varRef)(:,useGroups,useBinsSp);
+    dataTestS =data.spatial.(varTest{ii})(:,useGroups,useBinsSp);
+    dataRefS = dataRefS(:);
+    dataTestS = dataTestS(:);
+
+    % calculate correlation
+    [corrS,pS] = corr(dataRefS,dataTestS,'rows','complete');
+    dataCorr.(varTest{ii}).corrS = corrS;
+    dataCorr.(varTest{ii}).pS = pS;
+
+    % define title
+    ttl = ['Spatial Corrleation (' ttlSupp{ii} '): r=' num2str(corrS,2)...
+        ', p=' num2str(pS,2)];
+
+    % plot scatter
+    nexttile(2*(ii-1)+2); hold on
+    scatter(dataRefS,dataTestS,'Marker','.','MarkerEdgeColor','k')
+
+    % set plot labels
+    % xlim([0 1])
+    xlabel(varRef)
+    % ylim([0 1])
+    ylabel(varTest{ii})
+    title(ttl)
+    axis('square')
+
+    finalData(ii).dataRefS = dataRefS(:);
+    finalData(ii).dataTestS = dataTestS(:);
+
+
+end
+
+
+%% Plot spatial results
+
+useGroups = [1:2 8:12];
+useDays = {1,7:10};
+dayLabs = {'Early Learning','Late Learning'};
+
+% useDays = num2cell(1:10);
+% dayLabs = useDays;
+
+fNames = {'RBR','PVC','PPS'};
+colors = {[0 1 1],[1 0.5 0],[1 0 0 ]};
+XBase = 2.5:5:5*(nBins);
+
+useFields = [1 2 3];
+nFields = length(useFields);
+
+figure; tiledlayout(1,length(useDays))
+
+finalData = struct();
+
+for uu = 1:length(useDays)
+    useDaysCur = useDays{uu};
+    nexttile(uu); hold on
+    title(dayLabs{uu})
+
+    h = zeros(1,nFields);
+    for ii = 1:nFields
+        iCur = useFields(ii);
+
+        % load data
+        curData = data.spatial.(fNames{iCur})(useDaysCur,useGroups,:);
+
+        % calculate mean across days
+        curDataMean = squeeze(mean(curData,1,'omitnan'));
+
+        % plot data
+        h(ii) = semshade(curDataMean,0.3,colors{iCur},XBase);
+
+        finalData(uu).(fNames{iCur}) = curDataMean;
+    end
+
+    % plot cues and reward
+    load('cueTemp_4m.mat','cueTemp')
+    cueX = 2.5:5:397.5;
+    plotCues(cueX,cueTemp,max(ylim),[0.5 0.5 0.5],0);
+    xline(366)
+    ylim([0 0.7])
+
+    legend(h,fNames(useFields),'Location','best')
+end
+
+
+%% Plot spatial results versus behavior
+
+useGroups = [1:2 8:12];
+useDays = 7:10;
+fNames = {'RBR','Licking','Velocity'};
+colors = {[0 1 1],[1 0 1],[0 1 0]};
+behStart = 2;
+XBase = 2.5:5:5*(nBins);
+XBase = 1:nBins;
+
+useFields = 1:3;
+nFields = length(useFields);
+
+figure; hold on
+
+finalData = struct();
+
+h = zeros(1,nFields);
+for ii = 1:nFields
+    iCur = useFields(ii);
+
+    % load data
+    if iCur<behStart
+        curData = data.spatial.(fNames{iCur})(useDays,useGroups,:);
+    else
+        curData = data.spatial.(fNames{iCur})(useDays,:,:);
+        curData(abs(curData)==inf) = NaN;
+    end
+
+    % calculate mean across days
+    curDataMean = squeeze(mean(curData,1,'omitnan'));
+    % if iCur>=behStart
+    %     mn = min(curDataMean,[],'all');
+    %     mx = max(curDataMean,[],'all');
+    %     curDataMean = (curDataMean-mn)/abs(mx-mn);
+    % end
+
+    % set axis
+    if ii==3
+        yyaxis right
+    end
+
+    % plot data
+    h(ii) = semshade(curDataMean,0.3,colors{iCur},XBase);
+
+    finalData.(fNames{iCur}) = curDataMean;
+end
+
+% plot cues and reward'
+load('cueTemp_4m.mat','cueTemp')
+cueX = 2.5:5:397.5;
+cueX = 1:80;
+plotCues(cueX,cueTemp,max(ylim),[0.5 0.5 0.5],0);
+xline(366/5)
+
+legend(h,fNames(useFields),'Location','best')
+
